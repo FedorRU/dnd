@@ -45,8 +45,8 @@ input,select{padding:10px 12px;border-radius:10px;border:1px solid var(--line);b
 .grow{flex:1;min-width:0}
 .sub{color:var(--muted);font-size:.85rem}
 .note{color:var(--muted);font-size:.82rem;margin:0}
-.tabs{display:grid;grid-template-columns:repeat(5,1fr);gap:5px}
-.tab{padding:9px 2px;font-size:.9rem;border-radius:10px;border:1px solid var(--line);background:var(--card);font-weight:600}
+.tabs{display:grid;grid-template-columns:repeat(6,1fr);gap:4px}
+.tab{padding:9px 1px;font-size:.8rem;border-radius:10px;border:1px solid var(--line);background:var(--card);font-weight:600}
 .tab[aria-selected="true"]{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
 .panel{display:flex;flex-direction:column;gap:12px}
 .box{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px;display:flex;flex-direction:column;gap:10px}
@@ -106,7 +106,14 @@ input,select{padding:10px 12px;border-radius:10px;border:1px solid var(--line);b
 textarea{font:inherit;color:inherit;width:100%;padding:10px 12px;border-radius:10px;border:1px solid var(--line);background:var(--card);resize:vertical}
 .btn.ok{color:var(--ok)}
 .hpnum{font:600 1.3rem var(--mono);font-variant-numeric:tabular-nums}
-.hpnum .tmp{font-size:.85rem;color:var(--accent)}
+.hpnum.low{color:var(--danger)}
+.slide{display:flex;flex-direction:column;gap:2px}
+input[type=range]{width:100%;height:36px;padding:0;border:0;background:none;accent-color:var(--accent)}
+#hpTmp{accent-color:var(--conc)}
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.chip{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:6px 10px;display:flex;flex-direction:column}
+.chip span{font-size:.72rem;color:var(--muted)}
+.chip b{font:600 1rem var(--mono)}
 .bar{height:8px;border-radius:99px;background:var(--chip);overflow:hidden}
 .bar .fill{height:100%;background:var(--ok)}
 .bar .fill.low{background:var(--danger)}

@@ -1,5 +1,5 @@
 // Bump VERSION whenever you change any file, so phones pick up the update.
-const VERSION = 'grimoire-v5';
+const VERSION = 'grimoire-v6';
 const FILES = ['./', 'index.html', 'app.js', 'manifest.webmanifest',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-maskable-512.png', 'icons/apple-touch-icon.png'];
 self.addEventListener('install', e => {

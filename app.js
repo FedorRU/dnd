@@ -69,18 +69,31 @@ const ARMORS = [['Стёганый',11,null],['Кожаный',11,null],['Про
 const K_SPELLS = 'grimoire-spells-v1', K_STATE = 'grimoire-state-v1';
 const load = (k, d) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch (e) { return d; } };
 const store = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); return true; } catch (e) { toast('Не удалось сохранить: память браузера заполнена'); return false; } };
-let SPELLS = load(K_SPELLS, []);
+// spells, classes and races live in IndexedDB (too big for localStorage)
+const idb = (() => {
+  let dbp = null;
+  const open = () => dbp || (dbp = new Promise((res, rej) => {
+    const r = indexedDB.open('grimoire', 1);
+    r.onupgradeneeded = () => r.result.createObjectStore('kv');
+    r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+  }));
+  const tx = (mode, fn) => open().then(db => new Promise((res, rej) => {
+    const t = db.transaction('kv', mode), st = t.objectStore('kv'), q = fn(st);
+    t.oncomplete = () => res(q && q.result); t.onerror = () => rej(t.error);
+  }));
+  return {get: k => tx('readonly', st => st.get(k)), set: (k, v) => tx('readwrite', st => st.put(v, k))};
+})();
+let SPELLS = [], CDATA = {classes: [], races: []};
 let BY = {};
 const indexSpells = () => { BY = Object.fromEntries(SPELLS.map(s => [s.id, s])); };
-indexSpells();
 
 const uid = () => Math.random().toString(36).slice(2, 9);
 const newChar = () => ({id: 'c' + Date.now().toString(36), name: 'Новый персонаж', race: '', cls: 'чародей', sub: '', lvl: 1,
   abil: {str:10, dex:10, con:10, int:10, wis:10, cha:10}, saves: null, skills: {}, speed: 30,
-  hp: {max: 0, cur: 0, tmp: 0}, hpAuto: true, hdUsed: 0, spells: [], hide: [], cur: null, pact: null, arc: {}, sp: null, conc: null,
+  raceVar: '', opts: [], hp: {max: 0, cur: 0, tmp: 0}, hpAuto: true, hdUsed: 0, spells: [], hide: [], cur: null, pact: null, arc: {}, sp: null, conc: null,
   armor: '', shield: false, acMagic: 0, acMisc: 0, mageArmor: false, items: [], feats: [], gear: ''});
 let S = load(K_STATE, null) || {chars: [], active: null};
-let ui = {tab: 'fight', open: new Set(), q: '', circle: 'all', scope: 'class', subOther: false};
+let ui = {tab: 'fight', open: new Set(), q: '', circle: 'all', scope: 'class', subOther: false, optOpen: {}};
 
 const char = () => S.chars.find(c => c.id === S.active) || null;
 const base = c => CLASSES[c.cls] || CLASSES['чародей'];
@@ -149,15 +162,23 @@ function importFile(file) {
       const c = Object.assign(newChar(), data.char, {id: 'c' + Date.now().toString(36)});
       norm(c); S.chars.push(c); S.active = c.id; save(); toast('Персонаж «' + c.name + '» добавлен'); render(); return;
     }
+    if (data && data.kind === 'grimoire-data') { setData(data.spells || SPELLS, {classes: data.classes || [], races: data.races || []}); return; }
     if (!Array.isArray(data)) { toast('Не узнал формат файла.'); return; }
+    if (data.length && data[0].kind && data[0].html) { toast('Это сырая выгрузка классов. Нужен готовый файл данных гримуара.'); return; }
     const list = data.length && 'n' in data[0] && 'l' in data[0] ? data : parseExport(data);
     if (!list.length) { toast('В файле не нашлось заклинаний.'); return; }
-    if (!store(K_SPELLS, list)) return;
-    SPELLS = list; indexSpells();
-    if (!S.chars.length) { const c = newChar(); norm(c); S.chars.push(c); S.active = c.id; save(); ui.tab = 'char'; }
-    toast('Загружено заклинаний: ' + list.length); render();
+    setData(list, CDATA);
   };
   rd.readAsText(file);
+}
+function setData(spells, cdata) {
+  SPELLS = spells; CDATA = cdata; indexSpells();
+  idb.set('data', {spells, classes: cdata.classes, races: cdata.races}).then(() => {
+    try { localStorage.removeItem(K_SPELLS); } catch (e) {}
+  }).catch(() => toast('Не удалось сохранить данные на устройстве'));
+  if (!S.chars.length) { const c = newChar(); norm(c); S.chars.push(c); S.active = c.id; save(); ui.tab = 'char'; }
+  toast(`Загружено: заклинаний ${spells.length}` + (cdata.classes.length ? `, классов ${cdata.classes.length}, рас ${cdata.races.length}` : ''));
+  render();
 }
 function pickFile() {
   const inp = document.createElement('input'); inp.type = 'file'; inp.accept = '.json,application/json';
@@ -209,6 +230,8 @@ const outOfLimit = (c, x) => {
   return !!BY[x.id] && fromSub(c, BY[x.id]) && c.cls !== 'колдун';
 };
 function subclassesOf(cls) {
+  const d = CDATA.classes.find(x => x.cls === cls);
+  if (d && d.subclasses.length) return d.subclasses.map(x => x.n.toLowerCase());
   const out = new Set(EXTRA_SUBS[cls] || []);
   for (const s of SPELLS) for (const m of s.sc.matchAll(/([^,;]+?)\s*\(([^)]+)\)/g))
     if (m[2].trim().toLowerCase() === cls) out.add(m[1].trim().toLowerCase());
@@ -219,6 +242,22 @@ const stepper = (label, val, fn, id) => h('div', {class: 'fld'}, h('span', {}, l
   h('span', {class: 'num', id}, val),
   h('button', {class: 'step', 'aria-label': label + ' больше', on: {click: () => fn(1)}}, '+')));
 const box = (title, ...kids) => h('div', {class: 'box'}, title ? h('h2', {}, title) : null, ...kids);
+
+// ---------- class & race data ----------
+const nm = s => s && s === s.toUpperCase() ? s[0] + s.slice(1).toLowerCase() : s;
+const CD = c => CDATA.classes.find(x => x.cls === c.cls);
+const SUBD = c => { const d = CD(c); return d && c.sub ? d.subclasses.find(x => x.n.toLowerCase() === c.sub.toLowerCase()) : null; };
+const RD = c => CDATA.races.find(r => r.race === c.race);
+function raceTraits(c) {
+  const r = RD(c); if (!r) return [];
+  const v = r.variants.find(x => x.n === c.raceVar) || r.variants[0];
+  const has = new Set(v.tr.map(t => t.n));
+  // sub-race panes list only their own traits; add the base race traits underneath
+  const baseV = r.variants[0];
+  const extra = v !== baseV && !has.has('Скорость') ? baseV.tr.filter(t => !has.has(t.n) && t.n !== 'Разновидности' && t.n !== 'Подрасы') : [];
+  return [...v.tr, ...extra];
+}
+const tableRow = c => { const d = CD(c); return d ? (d.table[c.lvl] || {}) : {}; };
 
 // ---------- derived combat numbers ----------
 function armorClass(c) {
@@ -260,7 +299,7 @@ function render() {
     app.append(renderTop(c));
     const panel = h('section', {class: 'panel'});
     app.append(panel);
-    ({fight: renderFight, book: renderBook, skills: renderSkills, gear: renderGear, char: renderChar}[ui.tab] || renderFight)(c, panel);
+    ({fight: renderFight, book: renderBook, feats: renderFeats, skills: renderSkills, gear: renderGear, char: renderChar}[ui.tab] || renderFight)(c, panel);
   }
   app.querySelectorAll('[data-keep]').forEach(e => { if (keep[e.dataset.keep]) e.scrollLeft = keep[e.dataset.keep]; });
 }
@@ -269,8 +308,8 @@ function renderWelcome() {
   app.append(h('div', {class: 'lock'},
     h('h1', {}, 'Гримуар партии'),
     h('p', {class: 'note'}, 'Помощник для D&D 5e: заклинания, хиты, навыки, снаряжение. Работает без интернета, всё хранится только на этом устройстве.'),
-    box('Загрузите файл заклинаний',
-      h('p', {class: 'note'}, 'Выберите файл dndsu_spells.json (или spells.json), который вам прислали в чате партии. Это нужно сделать один раз.'),
+    box('Загрузите файл данных',
+      h('p', {class: 'note'}, 'Выберите файл grimoire_data.json, который вам прислали в чате партии: в нём заклинания, классы и расы. Это нужно сделать один раз.'),
       h('button', {class: 'btn primary', on: {click: pickFile}}, 'Выбрать файл'))));
 }
 
@@ -279,11 +318,11 @@ function renderTop(c) {
     ...S.chars.map(x => h('option', {value: x.id, selected: x.id === c.id}, x.name)));
   const add = h('button', {class: 'step', 'aria-label': 'Новый персонаж', on: {click: () => { const n = newChar(); norm(n); S.chars.push(n); S.active = n.id; ui.tab = 'char'; save(); render(); }}}, '+');
   const tabs = h('div', {class: 'tabs', role: 'tablist'},
-    ...[['fight', 'Бой'], ['book', 'Книга'], ['skills', 'Навыки'], ['gear', 'Вещи'], ['char', 'Лист']].map(([id, t]) =>
+    ...[['fight', 'Бой'], ['book', 'Книга'], ['feats', 'Умения'], ['skills', 'Навыки'], ['gear', 'Вещи'], ['char', 'Лист']].map(([id, t]) =>
       h('button', {class: 'tab', role: 'tab', 'aria-selected': ui.tab === id ? 'true' : 'false', on: {click: () => { ui.tab = id; render(); window.scrollTo(0, 0); }}}, t)));
   return h('div', {class: 'top'},
     h('div', {class: 'row nowrap'}, sel, add),
-    h('div', {class: 'sub'}, [c.race, cap(c.cls) + (c.sub ? ' · ' + cap(c.sub) : ''), c.lvl + ' ур.'].filter(Boolean).join(' · ')),
+    h('div', {class: 'sub'}, [c.raceVar || c.race, cap(c.cls) + (c.sub ? ' · ' + cap(c.sub) : ''), c.lvl + ' ур.'].filter(Boolean).join(' · ')),
     tabs);
 }
 
@@ -295,32 +334,33 @@ function renderFight(c, panel) {
     h('button', {class: 'btn grow', on: {click: () => shortRest(c)}}, 'Короткий отдых'),
     h('button', {class: 'btn grow', on: {click: () => longRest(c)}}, 'Длинный отдых')));
   if (ui.hdOffer && c.lvl - c.hdUsed > 0) panel.append(h('div', {class: 'concbar'},
-    h('span', {}, `Кости хитов: осталось ${c.lvl - c.hdUsed}. Бросьте к${base(c).hd}${sign(am(c, 'con'))} и введите итог в «Лечение».`),
+    h('span', {}, `Кости хитов: осталось ${c.lvl - c.hdUsed}. Бросьте к${base(c).hd}${sign(am(c, 'con'))} и прибавьте ползунком.`),
     h('div', {class: 'row nowrap'},
       h('button', {class: 'btn', on: {click: () => { c.hdUsed++; save(); render(); }}}, 'Потратить'),
       h('button', {class: 'btn', on: {click: () => { ui.hdOffer = false; render(); }}}, 'Готово'))));
-  // HP
+  // HP: two sliders, current and temporary
   const hp = c.hp;
-  const amt = h('input', {type: 'number', inputmode: 'numeric', id: 'hpAmt', placeholder: 'Число', min: '0', class: 'grow'});
-  const val = () => Math.max(0, parseInt(amt.value, 10) || 0);
-  const dmg = () => { let v = val(); if (!v) return; const t = Math.min(hp.tmp, v); hp.tmp -= t; v -= t; hp.cur = Math.max(0, hp.cur - v);
-    save(); render(); if (c.conc && BY[c.conc]) toast(`Проверка концентрации: Тел, СЛ ${Math.max(10, Math.floor(val() / 2))}`); };
-  const heal = () => { const v = val(); if (!v) return; hp.cur = Math.min(hp.max, hp.cur + v); save(); render(); };
-  const tmp = () => { const v = val(); hp.tmp = Math.max(hp.tmp, v); save(); render(); };
-  const pct = hp.max ? Math.max(0, Math.min(100, hp.cur / hp.max * 100)) : 0;
+  const num = h('span', {class: 'hpnum'});
+  const show = () => { num.textContent = `${hp.cur} / ${hp.max}` + (hp.tmp ? `  +${hp.tmp}` : ''); num.classList.toggle('low', hp.cur <= hp.max / 4); };
+  show();
+  const slider = (id, label, max, get, set) => {
+    const v = h('b', {class: 'num'}, String(get()));
+    const r = h('input', {type: 'range', id, min: '0', max: String(max), step: '1', value: String(get()), 'aria-label': label,
+      on: {input: e => { set(+e.target.value); v.textContent = e.target.value; show(); }, change: () => save()}});
+    return h('div', {class: 'slide'}, h('div', {class: 'row nowrap'}, h('span', {class: 'sub grow'}, label), v), r);
+  };
   panel.append(box(null,
-    h('div', {class: 'boxh'}, h('h2', {}, 'Хиты'), h('span', {class: 'hpnum'}, `${hp.cur} / ${hp.max}`, hp.tmp ? h('span', {class: 'tmp'}, ` +${hp.tmp} врем.`) : null)),
-    h('div', {class: 'bar'}, h('div', {class: 'fill' + (pct <= 25 ? ' low' : ''), style: `width:${pct}%`})),
-    h('div', {class: 'row nowrap'}, amt,
-      h('button', {class: 'btn danger', on: {click: dmg}}, 'Урон'),
-      h('button', {class: 'btn ok', on: {click: heal}}, 'Лечение'),
-      h('button', {class: 'btn', on: {click: tmp}}, 'Врем.')),
-    h('p', {class: 'note'}, `Кости хитов: ${c.lvl - c.hdUsed}/${c.lvl} (к${base(c).hd}) · трата — во время короткого отдыха`)));
+    h('div', {class: 'boxh'}, h('h2', {}, 'Хиты'), num),
+    slider('hpCur', 'Текущие', hp.max, () => hp.cur, v => { hp.cur = v; }),
+    slider('hpTmp', 'Временные', Math.max(20, hp.max), () => hp.tmp, v => { hp.tmp = v; }),
+    h('p', {class: 'note'}, `Кости хитов: ${c.lvl - c.hdUsed}/${c.lvl} (к${base(c).hd}) · трата во время короткого отдыха`)));
   // core stats
   panel.append(h('div', {class: 'stats'},
     h('div', {class: 'stat'}, h('b', {}, String(armorClass(c))), h('span', {}, 'КД')),
     h('div', {class: 'stat'}, h('b', {}, sign(am(c, 'dex'))), h('span', {}, 'Инициатива')),
     h('div', {class: 'stat'}, h('b', {}, String(c.speed)), h('span', {}, 'Скорость'))));
+  const tr = Object.entries(tableRow(c)).filter(([k, v]) => !/Известн/.test(k) && v && v !== '-');
+  if (tr.length) panel.append(h('div', {class: 'chips'}, ...tr.map(([k, v]) => h('div', {class: 'chip'}, h('span', {}, k), h('b', {}, v)))));
   // attacks
   const weapons = c.items.filter(i => i.kind === 'weapon' && i.eq !== false);
   if (weapons.length) {
@@ -543,6 +583,51 @@ function renderBook(c, panel) {
   renderList();
 }
 
+// --- Умения ---
+function featCard(key, title, meta, text, extra) {
+  const open = ui.open.has(key);
+  const card = h('div', {class: 'spell'},
+    h('div', {class: 'sh'}, extra || null, h('button', {class: 'open', 'aria-expanded': open ? 'true' : 'false', on: {click: () => { open ? ui.open.delete(key) : ui.open.add(key); render(); }}},
+      h('b', {}, nm(title)), meta ? h('span', {}, meta) : null)));
+  if (open) card.append(h('div', {class: 'sb'}, h('p', {class: 'text', text})));
+  return card;
+}
+function renderFeats(c, panel) {
+  const d = CD(c);
+  if (!d) { panel.append(h('p', {class: 'empty'}, 'Нет данных о классах. Загрузите файл grimoire_data.json во вкладке «Лист».')); return; }
+  const tr = Object.entries(tableRow(c)).filter(([, v]) => v && v !== '-');
+  if (tr.length) panel.append(h('div', {class: 'chips'}, ...tr.map(([k, v]) => h('div', {class: 'chip'}, h('span', {}, k), h('b', {}, v)))));
+  const sub = SUBD(c);
+  const feats = d.features.filter(f => f.l <= c.lvl).map(f => ({...f, src: cap(c.cls)}));
+  if (sub) feats.push(...sub.f.filter(f => f.l <= c.lvl).map(f => ({...f, src: sub.n})));
+  feats.sort((a, b) => a.l - b.l);
+  panel.append(h('div', {class: 'lvlh'}, `Умения класса · ${c.lvl} ур.`));
+  feats.forEach(f => panel.append(featCard('f' + f.src + f.n, f.n, `${f.l} ур. · ${f.src}`, f.x)));
+  const next = [...d.features, ...(sub ? sub.f : [])].filter(f => f.l > c.lvl).sort((a, b) => a.l - b.l);
+  if (next.length) panel.append(h('p', {class: 'note'}, `Дальше: ${next.slice(0, 4).map(f => `${nm(f.n)} (${f.l})`).join(', ')}…`));
+  if (!c.sub) panel.append(h('p', {class: 'note'}, 'Выберите подкласс во вкладке «Лист», чтобы увидеть его умения.'));
+  // pickable options: metamagic, invocations, maneuvers, fighting styles, infusions
+  for (const g of d.options) {
+    const mine = g.items.filter(it => c.opts.includes(g.n + '|' + it.n));
+    panel.append(h('div', {class: 'lvlh'}, nm(g.n) + (mine.length ? ` · выбрано ${mine.length}` : '')));
+    mine.forEach(it => panel.append(optCard(c, g, it)));
+    const open = !!ui.optOpen[g.n];
+    panel.append(h('button', {class: 'btn', on: {click: () => { ui.optOpen[g.n] = !open; render(); }}}, open ? 'Скрыть список' : `Выбрать из списка (${g.items.length})`));
+    if (open) g.items.filter(it => !mine.includes(it)).forEach(it => panel.append(optCard(c, g, it)));
+  }
+  const rt = raceTraits(c);
+  if (rt.length) {
+    panel.append(h('div', {class: 'lvlh'}, `Раса · ${c.raceVar || c.race}`));
+    rt.forEach(t => panel.append(featCard('r' + t.n, t.n, '', t.x)));
+  }
+}
+function optCard(c, g, it) {
+  const key = g.n + '|' + it.n, on = c.opts.includes(key);
+  const btn = h('button', {class: 'pick' + (on ? ' on' : ''), 'aria-pressed': on ? 'true' : 'false', 'aria-label': on ? 'Убрать' : 'Выбрать',
+    on: {click: () => { on ? c.opts.splice(c.opts.indexOf(key), 1) : c.opts.push(key); save(); render(); }}}, on ? '✓' : '+');
+  return featCard('o' + key, it.n, '', it.x, btn);
+}
+
 // --- Навыки ---
 function renderSkills(c, panel) {
   const p = pb(c.lvl);
@@ -562,7 +647,8 @@ function renderSkills(c, panel) {
       h('span', {class: 'dot' + (lvl ? ' on' : '') + (lvl === 2 ? ' ex' : '')}), h('span', {class: 'grow'}, name, h('small', {}, ' ' + ABN[a])), h('b', {class: 'num'}, sign(am(c, a) + bonus))));
   }
   const percep = 10 + am(c, 'wis') + ((c.skills.prc || 0) === 2 ? 2 * p : (c.skills.prc || 0) === 1 ? p : jack ? Math.floor(p / 2) : 0);
-  panel.append(box('Навыки', h('p', {class: 'note'}, `Нажатие: владение → компетентность → снять.${jack ? ' Мастер на все руки учтён.' : ''} Пассивная внимательность: ${percep}.`), sk));
+  const cs = CD(c) && CD(c).info.skills;
+  panel.append(box('Навыки', cs ? h('p', {class: 'note'}, 'Класс: ' + cs) : null, h('p', {class: 'note'}, `Нажатие: владение → компетентность → снять.${jack ? ' Мастер на все руки учтён.' : ''} Пассивная внимательность: ${percep}.`), sk));
 }
 
 // --- Вещи ---
@@ -632,7 +718,17 @@ function renderChar(c, panel) {
     ...Object.keys(CLASSES).map(k => h('option', {value: k, selected: k === c.cls}, cap(k))));
   panel.append(box('Персонаж',
     h('label', {class: 'fld'}, h('span', {}, 'Имя'), h('input', {id: 'name', value: c.name, on: {change: e => { set('name', e.target.value.trim() || 'Без имени'); render(); }}})),
-    h('label', {class: 'fld'}, h('span', {}, 'Раса'), h('input', {id: 'race', value: c.race || '', placeholder: 'например, человек', on: {change: e => { set('race', e.target.value.trim()); render(); }}})),
+    ...(CDATA.races.length ? (() => {
+      const r = RD(c);
+      const rs = h('select', {id: 'race', on: {change: e => { c.race = e.target.value; const nr = RD(c); c.raceVar = nr ? nr.variants[0].n : '';
+        const sp = nr && (nr.variants[0].speed); if (sp) c.speed = sp; save(); render(); }}},
+        h('option', {value: '', selected: !c.race}, 'Не выбрана'),
+        ...CDATA.races.map(x => h('option', {value: x.race, selected: x.race === c.race}, x.race)));
+      const vs = r && r.variants.length > 1 ? h('select', {id: 'raceVar', on: {change: e => { c.raceVar = e.target.value;
+        const v = r.variants.find(x => x.n === c.raceVar); if (v && v.speed) c.speed = v.speed; save(); render(); }}},
+        ...r.variants.map(v => h('option', {value: v.n, selected: v.n === c.raceVar}, v.n))) : null;
+      return [h('div', {class: 'grid2'}, h('label', {class: 'fld'}, h('span', {}, 'Раса'), rs), vs ? h('label', {class: 'fld'}, h('span', {}, 'Разновидность'), vs) : h('div'))];
+    })() : [h('label', {class: 'fld'}, h('span', {}, 'Раса'), h('input', {id: 'race', value: c.race || '', placeholder: 'например, человек', on: {change: e => { set('race', e.target.value.trim()); render(); }}}))]),
     h('div', {class: 'grid2'}, h('label', {class: 'fld'}, h('span', {}, 'Класс'), cls), h('label', {class: 'fld'}, h('span', {}, 'Подкласс'), subSel)),
     subIn,
     h('div', {class: 'grid2'},
@@ -680,7 +776,10 @@ function renderChar(c, panel) {
 
 // ---------- start ----------
 S.chars.forEach(norm);
-render();
+idb.get('data').then(d => {
+  if (d) { SPELLS = d.spells || []; CDATA = {classes: d.classes || [], races: d.races || []}; }
+  else { SPELLS = load(K_SPELLS, []); if (SPELLS.length) idb.set('data', {spells: SPELLS, classes: [], races: []}).catch(() => {}); }
+}).catch(() => { SPELLS = load(K_SPELLS, []); }).then(() => { indexSpells(); render(); });
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
   const hadController = !!navigator.serviceWorker.controller;
   navigator.serviceWorker.register('sw.js').catch(() => {});
