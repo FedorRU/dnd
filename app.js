@@ -132,6 +132,15 @@ const h = (tag, attrs = {}, ...kids) => {
 function toast(t) { const el = document.getElementById('toast'); el.textContent = t; el.hidden = false; clearTimeout(toast.t); toast.t = setTimeout(() => el.hidden = true, 2200); }
 const ru = (a, b) => a.n.localeCompare(b.n, 'ru');
 const picked = (c, id) => c.spells.find(x => x.id === id);
+// "аберрантный разум (чародей)" etc. are listed in each spell's subclass field
+const subKey = c => c.sub ? (c.sub.trim().toLowerCase() + ' (' + c.cls + ')') : '';
+const fromSub = (c, s) => !!subKey(c) && s.sc.toLowerCase().includes(subKey(c));
+function subclassesOf(cls) {
+  const out = new Set();
+  for (const s of SPELLS) for (const m of s.sc.matchAll(/([^,;]+?)\s*\(([^)]+)\)/g))
+    if (m[2].trim().toLowerCase() === cls) out.add(m[1].trim().toLowerCase());
+  return [...out].sort((a, b) => a.localeCompare(b, 'ru'));
+}
 const shortTime = t => /^1 действие/.test(t) ? 'действие' : /^1 бонусное/.test(t) ? 'бонус' : /^1 реакция/.test(t) ? 'реакция' : t;
 
 // ---------- views ----------
@@ -170,7 +179,7 @@ function renderTop(c) {
       h('button', {class: 'tab', role: 'tab', 'aria-selected': ui.tab === id ? 'true' : 'false', on: {click: () => { ui.tab = id; render(); window.scrollTo(0, 0); }}}, t)));
   return h('div', {class: 'top'},
     h('div', {class: 'row'}, sel, add),
-    h('div', {class: 'sub'}, `${cap(c.cls)}${c.sub ? ' · ' + c.sub : ''} · ${c.lvl} ур. · СЛ ${8 + p + m} · атака ${sign(p + m)} (${k.ab} ${sign(m)})`),
+    h('div', {class: 'sub'}, `${cap(c.cls)}${c.sub ? ' · ' + cap(c.sub) : ''} · ${c.lvl} ур. · СЛ ${8 + p + m} · атака ${sign(p + m)} (${k.ab} ${sign(m)})`),
     tabs);
 }
 const cap = s => s ? s[0].toUpperCase() + s.slice(1) : s;
@@ -183,6 +192,7 @@ function spellCard(c, s, mode) {
   if (st === 'бонус' || st === 'реакция') tags.push(h('span', {class: 'tag a'}, st));
   if (s.k) tags.push(h('span', {class: 'tag k'}, 'К'));
   if (s.r) tags.push(h('span', {class: 'tag'}, 'Р'));
+  if (fromSub(c, s)) tags.push(h('span', {class: 'tag k'}, 'подкласс'));
   const head = h('div', {class: 'sh'});
   if (mode === 'book') head.append(h('button', {class: 'pick' + (mine ? ' on' : '') + (mine && mine.b ? ' b' : ''), 'aria-pressed': mine ? 'true' : 'false',
     'aria-label': mine ? 'Убрать из выбранных' : 'Выбрать', on: {click: () => togglePick(c, s)}}, mine ? '✓' : '+'));
@@ -301,7 +311,7 @@ function longRest(c) { c.cur = slotsFor(c).slice(); norm(c); c.pact = pactSlots(
 
 function togglePick(c, s) {
   const i = c.spells.findIndex(x => x.id === s.id);
-  if (i >= 0) c.spells.splice(i, 1); else c.spells.push({id: s.id, b: false});
+  if (i >= 0) c.spells.splice(i, 1); else c.spells.push({id: s.id, b: fromSub(c, s)});
   save(); render();
 }
 
@@ -329,7 +339,7 @@ function renderBook(c, panel) {
     list.replaceChildren();
     const qq = ui.q.trim().toLowerCase();
     let arr = SPELLS;
-    if (ui.scope === 'class') arr = arr.filter(s => s.cl.includes(c.cls) && (s.l <= mc));
+    if (ui.scope === 'class') arr = arr.filter(s => (s.cl.includes(c.cls) || fromSub(c, s)) && (s.l <= mc));
     else if (ui.scope === 'mine') arr = arr.filter(s => picked(c, s.id));
     if (ui.circle !== 'all') arr = arr.filter(s => s.l === +ui.circle);
     if (qq) arr = arr.filter(s => (s.n + ' ' + s.e + ' ' + s.s).toLowerCase().includes(qq));
@@ -347,9 +357,13 @@ function renderBook(c, panel) {
 function renderChar(c, panel) {
   const set = (f, v) => { c[f] = v; save(); };
   const name = h('input', {id: 'name', value: c.name, on: {change: e => { set('name', e.target.value.trim() || 'Без имени'); render(); }}});
-  const cls = h('select', {id: 'cls', on: {change: e => { c.cls = e.target.value; c.cur = null; c.pact = null; c.sp = null; norm(c); save(); render(); }}},
+  const cls = h('select', {id: 'cls', on: {change: e => { c.cls = e.target.value; c.sub = ''; c.cur = null; c.pact = null; c.sp = null; norm(c); save(); render(); }}},
     ...Object.keys(CLASSES).map(k => h('option', {value: k, selected: k === c.cls}, cap(k))));
-  const sub = h('input', {id: 'sub', value: c.sub, placeholder: 'например, Аберрантный разум', on: {change: e => { set('sub', e.target.value.trim()); render(); }}});
+  const subs = subclassesOf(c.cls), curSub = (c.sub || '').toLowerCase();
+  const sub = h('select', {id: 'sub', on: {change: e => { set('sub', e.target.value); render(); }}},
+    h('option', {value: '', selected: !curSub}, 'Не выбран'),
+    ...subs.map(n => h('option', {value: n, selected: n === curSub}, cap(n))),
+    curSub && !subs.includes(curSub) ? h('option', {value: curSub, selected: true}, cap(curSub)) : null);
   const stepper = (label, val, fn) => h('label', {class: 'fld'}, label, h('div', {class: 'row'},
     h('button', {class: 'step', 'aria-label': label + ' меньше', on: {click: () => fn(-1)}}, '−'),
     h('span', {class: 'num'}, val),
