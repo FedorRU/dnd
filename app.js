@@ -77,7 +77,7 @@ indexSpells();
 const uid = () => Math.random().toString(36).slice(2, 9);
 const newChar = () => ({id: 'c' + Date.now().toString(36), name: 'Новый персонаж', race: '', cls: 'чародей', sub: '', lvl: 1,
   abil: {str:10, dex:10, con:10, int:10, wis:10, cha:10}, saves: null, skills: {}, speed: 30,
-  hp: {max: 0, cur: 0, tmp: 0}, hpAuto: true, hdUsed: 0, spells: [], cur: null, pact: null, arc: {}, sp: null, conc: null,
+  hp: {max: 0, cur: 0, tmp: 0}, hpAuto: true, hdUsed: 0, spells: [], hide: [], cur: null, pact: null, arc: {}, sp: null, conc: null,
   armor: '', shield: false, acMagic: 0, acMisc: 0, mageArmor: false, items: [], feats: [], gear: ''});
 let S = load(K_STATE, null) || {chars: [], active: null};
 let ui = {tab: 'fight', open: new Set(), q: '', circle: 'all', scope: 'class', subOther: false};
@@ -101,6 +101,7 @@ function norm(c) {
   for (const k of Object.keys(d)) if (c[k] === undefined) c[k] = d[k];
   if (c.mod != null) { const k = caster(c); if (k) c.abil[k.ab] = 10 + 2 * c.mod; delete c.mod; }   // old file format
   if (!c.saves) c.saves = Object.fromEntries(AB.map(a => [a, base(c).saves.includes(a)]));
+  c.spells.forEach(x => { if (x.b === false) delete x.b; });
   if (!Array.isArray(c.cur)) c.cur = slotsFor(c).slice();
   while (c.cur.length < 9) c.cur.push(0);
   if (c.pact == null) c.pact = pactSlots(c.lvl);
@@ -185,12 +186,28 @@ const h = (tag, attrs = {}, ...kids) => {
 };
 function toast(t) { const el = document.getElementById('toast'); el.textContent = t; el.hidden = false; clearTimeout(toast.t); toast.t = setTimeout(() => el.hidden = true, 2200); }
 const ru = (a, b) => a.n.localeCompare(b.n, 'ru');
-const picked = (c, id) => c.spells.find(x => x.id === id);
+// subclass spells that are always prepared/known: added automatically once their circle is available
+// (not for warlock patrons, the druid's Circle of the Land or Divine Soul — those are choices)
+const AUTO_OFF = ['колдун', 'друид|круг земли', 'чародей|божественная душа'];
+function autoSub(c) {
+  if (!subKey(c) || AUTO_OFF.includes(c.cls) || AUTO_OFF.includes(c.cls + '|' + c.sub.toLowerCase())) return [];
+  const mc = Math.max(maxCircle(c), 0);
+  return SPELLS.filter(s => fromSub(c, s) && s.l <= mc && !(c.hide || []).includes(s.id));
+}
+const picked = (c, id) => c.spells.find(x => x.id === id) || (autoSub(c).some(s => s.id === id) ? {id, auto: true} : null);
+const mySpells = c => { const ids = new Set(c.spells.map(x => x.id)); return [...c.spells.map(x => BY[x.id]), ...autoSub(c).filter(s => !ids.has(s.id))].filter(Boolean); };
 const shortTime = t => /^1 действие/.test(t) ? 'действие' : /^1 бонусное/.test(t) ? 'бонус' : /^1 реакция/.test(t) ? 'реакция' : t;
 const cap = s => s ? s[0].toUpperCase() + s.slice(1) : s;
 const sign = n => (n >= 0 ? '+' : '') + n;
 const subKey = c => c.sub ? (c.sub.trim().toLowerCase() + ' (' + c.cls + ')') : '';
 const fromSub = (c, s) => !!subKey(c) && s.sc.toLowerCase().includes(subKey(c));
+// subclass spells don't count toward the limit (except a warlock patron's expanded list); the player can override per spell
+const outOfLimit = (c, x) => {
+  if (x.auto) return true;
+  if (x.m === 'out' || x.b === true) return true;
+  if (x.m === 'in') return false;
+  return !!BY[x.id] && fromSub(c, BY[x.id]) && c.cls !== 'колдун';
+};
 function subclassesOf(cls) {
   const out = new Set(EXTRA_SUBS[cls] || []);
   for (const s of SPELLS) for (const m of s.sc.matchAll(/([^,;]+?)\s*\(([^)]+)\)/g))
@@ -358,7 +375,7 @@ function renderFight(c, panel) {
     sb.append(mk, back);
   }
   panel.append(sb);
-  const mine = c.spells.map(x => BY[x.id]).filter(Boolean);
+  const mine = mySpells(c);
   if (!mine.length) { panel.append(h('p', {class: 'empty'}, 'Заклинания не выбраны. Откройте «Книгу» и отметьте, что знает персонаж.')); return; }
   for (let lv = 0; lv <= 9; lv++) {
     const g = mine.filter(s => s.l === lv).sort(ru);
@@ -402,11 +419,11 @@ function spellCard(c, s, mode) {
   if (s.r) tags.push(h('span', {class: 'tag'}, 'Р'));
   if (fromSub(c, s)) tags.push(h('span', {class: 'tag k'}, 'подкласс'));
   const head = h('div', {class: 'sh'});
-  if (mode === 'book') head.append(h('button', {class: 'pick' + (mine ? ' on' : '') + (mine && mine.b ? ' b' : ''), 'aria-pressed': mine ? 'true' : 'false',
+  if (mode === 'book') head.append(h('button', {class: 'pick' + (mine ? ' on' : '') + (mine && outOfLimit(c, mine) ? ' b' : ''), 'aria-pressed': mine ? 'true' : 'false',
     'aria-label': mine ? 'Убрать из выбранных' : 'Выбрать', on: {click: () => togglePick(c, s)}}, mine ? '✓' : '+'));
   head.append(h('button', {class: 'open', 'aria-expanded': open ? 'true' : 'false', on: {click: () => { open ? ui.open.delete(key) : ui.open.add(key); render(); }}},
     h('b', {}, s.n), h('span', {}, [s.e, s.d, /^(действие|бонус|реакция)$/.test(st) ? '' : st].filter(Boolean).join(' · '))), ...tags);
-  const card = h('div', {class: 'spell' + (mine && mine.b ? ' bonus' : '')}, head);
+  const card = h('div', {class: 'spell' + (mine && outOfLimit(c, mine) ? ' bonus' : '')}, head);
   if (!open) return card;
   const body = h('div', {class: 'sb'},
     h('div', {class: 'facts'},
@@ -418,8 +435,8 @@ function spellCard(c, s, mode) {
       h('div', {class: 'wide'}, h('span', {}, 'Классы'), s.cl.join(', ') + (s.sc ? '; ' + s.sc : ''))),
     h('p', {class: 'text', text: s.x}));
   if (s.h) body.append(h('p', {class: 'higher', text: s.h}));
-  if (mode === 'book' && mine) body.append(h('label', {class: 'row sub'},
-    h('input', {type: 'checkbox', checked: !!mine.b, on: {change: e => { mine.b = e.target.checked; save(); render(); }}}),
+  if (mode === 'book' && mine && !mine.auto) body.append(h('label', {class: 'row sub'},
+    h('input', {type: 'checkbox', checked: outOfLimit(c, mine), on: {change: e => { mine.m = e.target.checked ? 'out' : 'in'; delete mine.b; save(); render(); }}}),
     'Не считается в лимит (подкласс, домен, психоника и т. п.)'));
   if (mode === 'fight') body.append(castRow(c, s));
   card.append(body);
@@ -453,15 +470,21 @@ function cast(c, s, lv) {
   save(); toast(msg); render();
 }
 function togglePick(c, s) {
-  const i = c.spells.findIndex(x => x.id === s.id);
-  if (i >= 0) c.spells.splice(i, 1); else c.spells.push({id: s.id, b: fromSub(c, s)});
+  c.hide = c.hide || [];
+  const i = c.spells.findIndex(x => x.id === s.id), h = c.hide.indexOf(s.id);
+  const auto = autoSub(c).some(x => x.id === s.id);
+  if (i >= 0) { c.spells.splice(i, 1); if (fromSub(c, s)) c.hide.push(s.id); }
+  else if (auto) c.hide.push(s.id);
+  else if (h >= 0) c.hide.splice(h, 1);
+  else c.spells.push({id: s.id});
   save(); render();
 }
 
 // --- Книга ---
 function limits(c) {
   const k = caster(c);
-  const counted = c.spells.filter(x => !x.b && BY[x.id]);
+  const all = mySpells(c).map(s => picked(c, s.id));
+  const counted = all.filter(x => !outOfLimit(c, x));
   const nC = counted.filter(x => BY[x.id].l === 0).length, nS = counted.length - nC;
   const limC = k ? k.cantrips(c.lvl) : 0;
   const limS = !k ? 0 : k.known ? k.known[c.lvl - 1] : k.prep(c.lvl, spellMod(c));
@@ -478,7 +501,7 @@ function renderBook(c, panel) {
   else {
     const L = limits(c);
     panel.append(h('div', {class: 'counts'}, countChip('Заговоры', L.nC, L.limC), countChip(L.word, L.nS, L.limS),
-      c.spells.some(x => x.b) ? h('div', {class: 'count'}, h('b', {}, String(c.spells.filter(x => x.b).length)), h('span', {}, 'Вне лимита'), h('small', {}, 'подкласс и др.')) : null));
+      mySpells(c).some(s => outOfLimit(c, picked(c, s.id))) ? h('div', {class: 'count'}, h('b', {}, String(mySpells(c).filter(s => outOfLimit(c, picked(c, s.id))).length)), h('span', {}, 'Вне лимита'), h('small', {}, 'подкласс и др.')) : null));
   }
   if (!k && ui.scope === 'class') ui.scope = 'all';
   const q = h('input', {type: 'search', id: 'q', placeholder: 'Поиск: огненный, fireball, некромантия', value: ui.q, autocomplete: 'off', on: {input: e => { ui.q = e.target.value; renderList(); }}});
