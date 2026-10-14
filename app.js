@@ -329,6 +329,9 @@ const app = document.getElementById('app');
 function render() {
   // keep horizontal scroll of chip rows across re-renders
   const keep = {}; app.querySelectorAll('[data-keep]').forEach(e => keep[e.dataset.keep] = e.scrollLeft);
+  // keep the page where it was: rebuilding empties it for a moment and the browser would jump to the top
+  const y = window.scrollY;
+  app.style.minHeight = app.offsetHeight + 'px';
   app.replaceChildren();
   if (!SPELLS.length) renderWelcome();
   else {
@@ -341,6 +344,8 @@ function render() {
     ({fight: renderFight, book: renderBook, feats: renderFeats, skills: renderSkills, gear: renderGear, char: renderChar}[ui.tab] || renderFight)(c, panel);
   }
   app.querySelectorAll('[data-keep]').forEach(e => { if (keep[e.dataset.keep]) e.scrollLeft = keep[e.dataset.keep]; });
+  app.style.minHeight = '';
+  window.scrollTo(0, y);
 }
 
 function renderWelcome() {
