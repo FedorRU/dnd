@@ -90,7 +90,7 @@ const indexSpells = () => { BY = Object.fromEntries(SPELLS.map(s => [s.id, s]));
 const uid = () => Math.random().toString(36).slice(2, 9);
 const newChar = () => ({id: 'c' + Date.now().toString(36), name: 'Новый персонаж', race: '', cls: 'чародей', sub: '', lvl: 1,
   abil: {str:10, dex:10, con:10, int:10, wis:10, cha:10}, saves: null, skills: {}, speed: 30,
-  raceVar: '', opts: [], hp: {max: 0, cur: 0, tmp: 0}, hpAuto: true, hdUsed: 0, spells: [], hide: [], cur: null, pact: null, arc: {}, sp: null, conc: null,
+  raceVar: '', opts: [], res: {}, hp: {max: 0, cur: 0, tmp: 0}, hpAuto: true, hdUsed: 0, spells: [], hide: [], cur: null, pact: null, arc: {}, sp: null, conc: null,
   armor: '', shield: false, acMagic: 0, acMisc: 0, mageArmor: false, items: [], feats: [], gear: ''});
 let S = load(K_STATE, null) || {chars: [], active: null};
 let ui = {tab: 'fight', open: new Set(), q: '', circle: 'all', scope: 'class', subOther: false, optOpen: {}};
@@ -106,9 +106,22 @@ function caster(c) {
 const am = (c, a) => mod(c.abil[a] || 10);
 const spellMod = c => { const k = caster(c); return k ? am(c, k.ab) : 0; };
 const slotsFor = c => { const k = caster(c); return !k || k.pact ? [] : (k.slots[c.lvl - 1] || []); };
-const maxCircle = c => { const k = caster(c); if (!k) return -1; return k.pact ? Math.max(pactLevel(c.lvl), ...arcanum(c.lvl)) : slotsFor(c).length; };
+const hasSubSpells = c => !!subKey(c) && SPELLS.some(s => fromSub(c, s));
+const maxCircle = c => { const k = caster(c); if (!k) return hasSubSpells(c) ? 9 : -1; return k.pact ? Math.max(pactLevel(c.lvl), ...arcanum(c.lvl)) : slotsFor(c).length; };
 const maxPoints = c => { const k = caster(c); return k && k.points && c.lvl >= 2 ? c.lvl : 0; };
-const avgHp = c => { const d = base(c).hd, con = am(c, 'con'); return Math.max(1, d + con + (c.lvl - 1) * (d / 2 + 1 + con)); };
+// +1 HP per level: Draconic Resilience (sorcerer) and Dwarven Toughness (hill dwarf)
+const hpPerLvl = c => ((c.sub || '').toLowerCase() === 'наследие драконьей крови' ? 1 : 0) + (/холмов/i.test(c.raceVar || '') ? 1 : 0);
+const avgHp = c => { const d = base(c).hd, con = am(c, 'con'); return Math.max(1, d + con + (c.lvl - 1) * (d / 2 + 1 + con) + hpPerLvl(c) * c.lvl); };
+const HEAVY = ['Колечный', 'Кольчуга', 'Наборный', 'Латы'];
+// speed with Unarmored Movement (monk) and Fast Movement (barbarian)
+function speedOf(c) {
+  let v = c.speed;
+  if (c.cls === 'монах' && !c.armor && !c.shield) v += parseInt(tableRow(c)['Скорость без доспехов'], 10) || 0;
+  if (c.cls === 'варвар' && c.lvl >= 5 && !HEAVY.includes(c.armor)) v += 10;
+  return v;
+}
+// initiative: Dex, plus Jack of All Trades for bards from 2nd level
+const initOf = c => am(c, 'dex') + (c.cls === 'бард' && c.lvl >= 2 ? Math.floor(pb(c.lvl) / 2) : 0);
 function norm(c) {
   const d = newChar();
   for (const k of Object.keys(d)) if (c[k] === undefined) c[k] = d[k];
@@ -209,7 +222,7 @@ function toast(t) { const el = document.getElementById('toast'); el.textContent 
 const ru = (a, b) => a.n.localeCompare(b.n, 'ru');
 // subclass spells that are always prepared/known: added automatically once their circle is available
 // (not for warlock patrons, the druid's Circle of the Land or Divine Soul — those are choices)
-const AUTO_OFF = ['колдун', 'друид|круг земли', 'чародей|божественная душа'];
+const AUTO_OFF = ['колдун', 'друид|круг земли', 'чародей|божественная душа', 'монах|путь четырёх стихий'];
 function autoSub(c) {
   if (!subKey(c) || AUTO_OFF.includes(c.cls) || AUTO_OFF.includes(c.cls + '|' + c.sub.toLowerCase())) return [];
   const mc = Math.max(maxCircle(c), 0);
@@ -257,6 +270,32 @@ function raceTraits(c) {
   const extra = v !== baseV && !has.has('Скорость') ? baseV.tr.filter(t => !has.has(t.n) && t.n !== 'Разновидности' && t.n !== 'Подрасы') : [];
   return [...v.tr, ...extra];
 }
+// limited class resources by the 2014 rules; ids are stable so used counts survive level-ups
+function classRes(c) {
+  const L = c.lvl, out = [], add = (id, name, max, rest, note) => { if (max > 0) out.push({id, name, max, rest, note}); };
+  const t = tableRow(c), sub = (c.sub || '').toLowerCase();
+  switch (c.cls) {
+    case 'варвар': { const r = parseInt(t['Ярость'], 10) || (L >= 17 ? 6 : L >= 12 ? 5 : L >= 6 ? 4 : L >= 3 ? 3 : 2); if (L < 20) add('rage', 'Ярость', r, 'long', t['Урон ярости'] ? `(урон ${t['Урон ярости']})` : ''); break; }
+    case 'монах': if (L >= 2) add('ki', 'Ци', parseInt(t['Очки ци'], 10) || L, 'short'); break;
+    case 'бард': add('insp', 'Вдохновение барда', Math.max(1, am(c, 'cha')), L >= 5 ? 'short' : 'long', `(к${L >= 15 ? 12 : L >= 10 ? 10 : L >= 5 ? 8 : 6})`); break;
+    case 'воин':
+      add('wind', 'Второе дыхание', 1, 'short');
+      if (L >= 2) add('surge', 'Всплеск действий', L >= 17 ? 2 : 1, 'short');
+      if (L >= 9) add('indom', 'Упорный', L >= 17 ? 3 : L >= 13 ? 2 : 1, 'long');
+      if (sub === 'мастер боевых искусств' && L >= 3) add('sup', 'Кости превосходства', L >= 15 ? 6 : L >= 7 ? 5 : 4, 'short', `(к${L >= 18 ? 12 : L >= 10 ? 10 : 8})`);
+      break;
+    case 'жрец': if (L >= 2) add('cd', 'Божественный канал', L >= 18 ? 3 : L >= 6 ? 2 : 1, 'short'); break;
+    case 'паладин':
+      add('sense', 'Божественное чувство', 1 + Math.max(0, am(c, 'cha')), 'long');
+      add('hands', 'Наложение рук (хиты)', 5 * L, 'long');
+      if (L >= 3) add('cd', 'Божественный канал', 1, 'short');
+      break;
+    case 'друид': if (L >= 2 && L < 20) add('wild', 'Дикий облик', 2, 'short'); break;
+    case 'волшебник': add('arec', 'Магическое восстановление', 1, 'long', `(ячейки на ${Math.ceil(L / 2)} кр.)`); break;
+    case 'изобретатель': if (L >= 7) add('flash', 'Вспышка гениальности', Math.max(1, am(c, 'int')), 'long'); break;
+  }
+  return out;
+}
 const tableRow = c => { const d = CD(c); return d ? (d.table[c.lvl] || {}) : {}; };
 
 // ---------- derived combat numbers ----------
@@ -265,7 +304,7 @@ function armorClass(c) {
   let ac;
   const a = ARMORS.find(x => x[0] === c.armor);
   if (a) ac = a[1] + (a[2] === null ? dex : Math.min(dex, a[2]));
-  else if (c.mageArmor) ac = 13 + dex;
+  else if (c.mageArmor || (c.sub || '').toLowerCase() === 'наследие драконьей крови') ac = 13 + dex;
   else {
     const u = base(c).unarmored;
     ac = 10 + dex + (u === 'con' ? am(c, 'con') : u === 'wis' && !c.shield ? am(c, 'wis') : 0);
@@ -354,13 +393,13 @@ function renderFight(c, panel) {
     slider('hpCur', 'Текущие', hp.max, () => hp.cur, v => { hp.cur = v; }),
     slider('hpTmp', 'Временные', Math.max(20, hp.max), () => hp.tmp, v => { hp.tmp = v; }),
     h('p', {class: 'note'}, `Кости хитов: ${c.lvl - c.hdUsed}/${c.lvl} (к${base(c).hd}) · трата во время короткого отдыха`)));
-  // core stats
-  panel.append(h('div', {class: 'stats'},
-    h('div', {class: 'stat'}, h('b', {}, String(armorClass(c))), h('span', {}, 'КД')),
-    h('div', {class: 'stat'}, h('b', {}, sign(am(c, 'dex'))), h('span', {}, 'Инициатива')),
-    h('div', {class: 'stat'}, h('b', {}, String(c.speed)), h('span', {}, 'Скорость'))));
-  const tr = Object.entries(tableRow(c)).filter(([k, v]) => !/Известн/.test(k) && v && v !== '-');
-  if (tr.length) panel.append(h('div', {class: 'chips'}, ...tr.map(([k, v]) => h('div', {class: 'chip'}, h('span', {}, k), h('b', {}, v)))));
+  // core numbers in one grid: armour, initiative, speed (+ spell DC and attack for casters)
+  const k = caster(c), sm = spellMod(c);
+  const tiles = [[String(armorClass(c)), 'КД'], [sign(initOf(c)), 'Инициатива'], [String(speedOf(c)), 'Скорость']];
+  if (k) tiles.push([String(8 + p + sm), 'СЛ закл.'], [sign(p + sm), 'Атака закл.'], [ABN[k.ab], 'Хар-ка закл.']);
+  panel.append(h('div', {class: 'stats'}, ...tiles.map(([v, l]) => h('div', {class: 'stat'}, h('b', {}, v), h('span', {}, l)))));
+  if (c.conc && BY[c.conc]) panel.append(h('div', {class: 'concbar'}, h('span', {}, 'Концентрация: ', h('b', {}, BY[c.conc].n)),
+    h('button', {class: 'btn', on: {click: () => { c.conc = null; save(); render(); }}}, 'Сбросить')));
   // attacks
   const weapons = c.items.filter(i => i.kind === 'weapon' && i.eq !== false);
   if (weapons.length) {
@@ -371,52 +410,55 @@ function renderFight(c, panel) {
     }
     panel.append(box('Атаки', list));
   }
-  // limited-use features
-  if (c.feats.length) {
+  // class resources (rage, ki, inspiration…) + the player's own trackers
+  const res = classRes(c);
+  if (res.length || c.feats.length) {
     const fl = h('div', {class: 'slots'});
-    c.feats.forEach(f => fl.append(slotPips(`${f.name} · ${f.rest === 'short' ? 'кор.' : 'длин.'} отдых`, f.left, f.max, v => { f.left = v; })));
-    panel.append(box('Умения', fl));
-  }
-  // spells
-  const k = caster(c);
-  if (!k) return;
-  const sm = spellMod(c);
-  panel.append(h('div', {class: 'stats'},
-    h('div', {class: 'stat'}, h('b', {}, String(8 + p + sm)), h('span', {}, 'СЛ заклинаний')),
-    h('div', {class: 'stat'}, h('b', {}, sign(p + sm)), h('span', {}, 'Атака закл.')),
-    h('div', {class: 'stat'}, h('b', {}, ABN[k.ab]), h('span', {}, 'Хар-ка закл.'))));
-  if (c.conc && BY[c.conc]) panel.append(h('div', {class: 'concbar'}, h('span', {}, 'Концентрация: ', h('b', {}, BY[c.conc].n)),
-    h('button', {class: 'btn', on: {click: () => { c.conc = null; save(); render(); }}}, 'Сбросить')));
-  const sb = h('div', {class: 'box'}, h('h2', {}, 'Ячейки'));
-  const grid = h('div', {class: 'slots'});
-  if (k.pact) {
-    grid.append(slotPips(`Договор · ${pactLevel(c.lvl)} круг`, c.pact, pactSlots(c.lvl), v => { c.pact = v; }));
-    for (const a of arcanum(c.lvl)) grid.append(slotPips(`Арканум · ${a} круг`, c.arc[a] ? 0 : 1, 1, v => { c.arc[a] = v === 0; }));
-  } else {
-    const m = slotsFor(c);
-    for (let lv = 1; lv <= 9; lv++) {
-      const max = m[lv - 1] || 0, cur = c.cur[lv - 1] || 0;
-      if (!max && !cur) continue;
-      grid.append(slotPips(`${lv} круг · ${cur}/${max}`, cur, max, v => { c.cur[lv - 1] = v; }));
+    for (const r of res) {
+      const left = r.max - Math.min(r.max, c.res[r.id] || 0), restTxt = r.rest === 'short' ? 'кор.' : 'длин.';
+      if (r.max <= 12) fl.append(slotPips(`${r.name}${r.note ? ' ' + r.note : ''} · ${restTxt}`, left, r.max, v => { c.res[r.id] = r.max - v; }));
+      else fl.append(h('div', {class: 'slot'}, h('span', {class: 'lbl'}, `${r.name} · ${restTxt}`), h('div', {class: 'row nowrap'},
+        h('button', {class: 'step', 'aria-label': r.name + ' потратить', on: {click: () => { c.res[r.id] = Math.min(r.max, (c.res[r.id] || 0) + 1); save(); render(); }}}, '−'),
+        h('span', {class: 'num'}, `${left}/${r.max}`),
+        h('button', {class: 'step', 'aria-label': r.name + ' вернуть', on: {click: () => { c.res[r.id] = Math.max(0, (c.res[r.id] || 0) - 1); save(); render(); }}}, '+'))));
     }
+    c.feats.forEach(f => fl.append(slotPips(`${f.name} · ${f.rest === 'short' ? 'кор.' : 'длин.'}`, f.left, f.max, v => { f.left = v; })));
+    panel.append(box('Ресурсы', fl));
   }
-  sb.append(grid.childNodes.length ? grid : h('p', {class: 'note'}, 'На этом уровне ячеек ещё нет.'));
-  if (maxPoints(c)) {
-    sb.append(h('div', {class: 'row nowrap'},
-      h('span', {class: 'sub grow'}, 'Очки чародейства'),
-      h('button', {class: 'step', disabled: c.sp <= 0, 'aria-label': 'Потратить очко', on: {click: () => { c.sp--; save(); render(); }}}, '−'),
-      h('span', {class: 'num'}, `${c.sp}/${maxPoints(c)}`),
-      h('button', {class: 'step', 'aria-label': 'Добавить очко', on: {click: () => { c.sp++; save(); render(); }}}, '+')));
-    const top = Math.min(5, slotsFor(c).length);
-    const mk = h('div', {class: 'cast'}, h('span', {class: 'sub full'}, 'Очки → ячейка'));
-    for (let lv = 1; lv <= top; lv++) mk.append(h('button', {class: 'btn', disabled: c.sp < COST[lv], on: {click: () => { c.sp -= COST[lv]; c.cur[lv - 1]++; save(); toast(`Создана ячейка ${lv} круга`); render(); }}}, `${lv} кр. за ${COST[lv]}`));
-    const back = h('div', {class: 'cast'}, h('span', {class: 'sub full'}, 'Ячейка → очки'));
-    for (let lv = 1; lv <= slotsFor(c).length; lv++) back.append(h('button', {class: 'btn', disabled: !(c.cur[lv - 1] > 0), on: {click: () => { c.cur[lv - 1]--; c.sp += lv; save(); toast(`+${lv} очк.`); render(); }}}, `${lv} кр. → ${lv}`));
-    sb.append(mk, back);
+  // spells: slots box for casters, then the chosen spells
+  if (k) {
+    const sb = h('div', {class: 'box'}, h('h2', {}, 'Ячейки'));
+    const grid = h('div', {class: 'slots'});
+    if (k.pact) {
+      grid.append(slotPips(`Договор · ${pactLevel(c.lvl)} круг`, c.pact, pactSlots(c.lvl), v => { c.pact = v; }));
+      for (const a of arcanum(c.lvl)) grid.append(slotPips(`Арканум · ${a} круг`, c.arc[a] ? 0 : 1, 1, v => { c.arc[a] = v === 0; }));
+    } else {
+      const m = slotsFor(c);
+      for (let lv = 1; lv <= 9; lv++) {
+        const max = m[lv - 1] || 0, cur = c.cur[lv - 1] || 0;
+        if (!max && !cur) continue;
+        grid.append(slotPips(`${lv} круг · ${cur}/${max}`, cur, max, v => { c.cur[lv - 1] = v; }));
+      }
+    }
+    sb.append(grid.childNodes.length ? grid : h('p', {class: 'note'}, 'На этом уровне ячеек ещё нет.'));
+    if (maxPoints(c)) {
+      sb.append(h('div', {class: 'row nowrap'},
+        h('span', {class: 'sub grow'}, 'Единицы чародейства'),
+        h('button', {class: 'step', disabled: c.sp <= 0, 'aria-label': 'Потратить единицу', on: {click: () => { c.sp--; save(); render(); }}}, '−'),
+        h('span', {class: 'num'}, `${c.sp}/${maxPoints(c)}`),
+        h('button', {class: 'step', 'aria-label': 'Добавить единицу', on: {click: () => { c.sp++; save(); render(); }}}, '+')));
+      const top = Math.min(5, slotsFor(c).length);
+      const mk = h('div', {class: 'cast'}, h('span', {class: 'sub full'}, 'Единицы → ячейка'));
+      for (let lv = 1; lv <= top; lv++) mk.append(h('button', {class: 'btn', disabled: c.sp < COST[lv], on: {click: () => { c.sp -= COST[lv]; c.cur[lv - 1]++; save(); toast(`Создана ячейка ${lv} круга`); render(); }}}, `${lv} кр. за ${COST[lv]}`));
+      const back = h('div', {class: 'cast'}, h('span', {class: 'sub full'}, 'Ячейка → единицы'));
+      for (let lv = 1; lv <= slotsFor(c).length; lv++) back.append(h('button', {class: 'btn', disabled: !(c.cur[lv - 1] > 0), on: {click: () => { c.cur[lv - 1]--; c.sp += lv; save(); toast(`+${lv} ед.`); render(); }}}, `${lv} кр. → ${lv}`));
+      sb.append(mk, back);
+    }
+    panel.append(sb);
   }
-  panel.append(sb);
   const mine = mySpells(c);
-  if (!mine.length) { panel.append(h('p', {class: 'empty'}, 'Заклинания не выбраны. Откройте «Книгу» и отметьте, что знает персонаж.')); return; }
+  if (!mine.length) { if (k) panel.append(h('p', {class: 'empty'}, 'Заклинания не выбраны. Откройте «Книгу» и отметьте, что знает персонаж.')); return; }
+  if (!k) panel.append(h('div', {class: 'lvlh'}, 'Заклинания подкласса'));
   for (let lv = 0; lv <= 9; lv++) {
     const g = mine.filter(s => s.l === lv).sort(ru);
     if (!g.length) continue;
@@ -436,6 +478,7 @@ function slotPips(label, cur, max, set) {
 function shortRest(c) {
   c.pact = pactSlots(c.lvl);
   c.feats.forEach(f => { if (f.rest === 'short') f.left = f.max; });
+  classRes(c).forEach(r => { if (r.rest === 'short') delete c.res[r.id]; });
   ui.hdOffer = true; ui.tab = 'fight';
   save(); render(); toast('Короткий отдых завершён');
 }
@@ -445,8 +488,9 @@ function longRest(c) {
   c.hp.cur = c.hp.max; c.hp.tmp = 0;
   c.hdUsed = Math.max(0, c.hdUsed - Math.max(1, Math.floor(c.lvl / 2)));
   c.feats.forEach(f => f.left = f.max);
+  c.res = {};
   ui.hdOffer = false;
-  save(); toast('Длинный отдых: хиты, ячейки, очки и умения восстановлены'); render();
+  save(); toast('Длинный отдых: хиты, ячейки и ресурсы восстановлены'); render();
 }
 
 // --- spell cards ---
@@ -486,6 +530,7 @@ function castRow(c, s) {
   const row = h('div', {class: 'cast'});
   const k = caster(c);
   if (s.l === 0) { if (s.k) row.append(h('button', {class: 'btn conc', on: {click: () => cast(c, s, 0)}}, 'Сотворить')); return row; }
+  if (!k) { row.append(h('button', {class: 'btn primary', on: {click: () => cast(c, s, 0)}}, 'Использовать'), h('span', {class: 'sub'}, 'по правилам подкласса (ци и т. п.)')); return row; }
   if (k.pact && s.l >= 6) {
     const used = !!c.arc[s.l];
     row.append(h('button', {class: 'btn primary', disabled: used || !arcanum(c.lvl).includes(s.l), on: {click: () => { c.arc[s.l] = true; cast(c, s, -1); }}}, used ? 'Арканум потрачен' : 'Таинственный арканум'));
@@ -537,13 +582,15 @@ const countChip = (label, n, lim) => {
 };
 function renderBook(c, panel) {
   const k = caster(c), mc = maxCircle(c);
-  if (!k) panel.append(h('p', {class: 'note'}, 'У этого класса без подходящего подкласса нет заклинаний. Можно смотреть все заклинания для справки.'));
+  const subOnly = !k && hasSubSpells(c);
+  if (subOnly) panel.append(h('p', {class: 'note'}, `Заклинания подкласса «${cap(c.sub)}»: тратятся по его правилам (например, ци), ячеек нет.`));
+  else if (!k) panel.append(h('p', {class: 'note'}, 'У этого класса без подходящего подкласса нет заклинаний. Можно смотреть все заклинания для справки.'));
   else {
     const L = limits(c);
     panel.append(h('div', {class: 'counts'}, countChip('Заговоры', L.nC, L.limC), countChip(L.word, L.nS, L.limS),
       mySpells(c).some(s => outOfLimit(c, picked(c, s.id))) ? h('div', {class: 'count'}, h('b', {}, String(mySpells(c).filter(s => outOfLimit(c, picked(c, s.id))).length)), h('span', {}, 'Вне лимита'), h('small', {}, 'подкласс и др.')) : null));
   }
-  if (!k && ui.scope === 'class') ui.scope = 'all';
+  if (!k && !subOnly && ui.scope === 'class') ui.scope = 'all';
   const q = h('input', {type: 'search', id: 'q', placeholder: 'Поиск: огненный, fireball, некромантия', value: ui.q, autocomplete: 'off', on: {input: e => { ui.q = e.target.value; renderList(); }}});
   panel.append(q);
   const scopeRow = h('div', {class: 'filters', 'data-keep': 'scope'});
@@ -551,7 +598,7 @@ function renderBook(c, panel) {
   panel.append(scopeRow, circleRow);
   const chips = () => {
     const keepS = scopeRow.scrollLeft, keepC = circleRow.scrollLeft;
-    scopeRow.replaceChildren(...[['class', 'Список класса'], ['mine', 'Выбранные'], ['all', 'Все заклинания']].filter(x => k || x[0] !== 'class').map(([id, t]) =>
+    scopeRow.replaceChildren(...[['class', subOnly ? 'Список подкласса' : 'Список класса'], ['mine', 'Выбранные'], ['all', 'Все заклинания']].filter(x => k || subOnly || x[0] !== 'class').map(([id, t]) =>
       h('button', {class: 'f', 'aria-pressed': ui.scope === id ? 'true' : 'false', on: {click: () => { ui.scope = id; chips(); renderList(); }}}, t)));
     const lim = ui.scope === 'class' ? Math.max(mc, 0) : 9;
     if (ui.circle !== 'all' && +ui.circle > lim) ui.circle = 'all';
@@ -568,7 +615,7 @@ function renderBook(c, panel) {
     list.replaceChildren();
     const qq = ui.q.trim().toLowerCase();
     let arr = SPELLS;
-    if (ui.scope === 'class') arr = arr.filter(s => (s.cl.includes(k.list) || fromSub(c, s)) && s.l <= mc);
+    if (ui.scope === 'class') arr = arr.filter(s => k ? (s.cl.includes(k.list) || fromSub(c, s)) && s.l <= mc : fromSub(c, s));
     else if (ui.scope === 'mine') arr = arr.filter(s => picked(c, s.id));
     if (ui.circle !== 'all') arr = arr.filter(s => s.l === +ui.circle);
     if (qq) arr = arr.filter(s => (s.n + ' ' + s.e + ' ' + s.s).toLowerCase().includes(qq));
