@@ -686,6 +686,7 @@ function renderSkills(c, panel) {
       h('span', {class: 'dot' + (on ? ' on' : '')}), h('span', {class: 'grow'}, ABFULL[a]), h('b', {class: 'num'}, sign(v))));
   }
   panel.append(box('Спасброски', h('p', {class: 'note'}, 'Нажмите, чтобы отметить владение. По умолчанию отмечены спасброски класса.'), sv));
+  panel.prepend(h('div', {class: 'stats'}, h('div', {class: 'stat'}, h('b', {}, sign(p)), h('span', {}, 'Бонус мастерства')), h('div', {class: 'stat'}, h('b', {}, String(c.lvl)), h('span', {}, 'Уровень')), h('div', {class: 'stat'}, h('b', {}, String(10 + am(c, 'wis') + ((c.skills.prc || 0) === 2 ? 2 * p : (c.skills.prc || 0) === 1 ? p : 0))), h('span', {}, 'Пасс. внимат.'))));
   const sk = h('div', {class: 'list'});
   for (const [id, name, a] of SKILLS) {
     const lvl = c.skills[id] || 0;
@@ -790,23 +791,12 @@ function renderChar(c, panel) {
       h('span', {class: 'num'}, String(c.abil[a])),
       h('button', {class: 'step', 'aria-label': ABFULL[a] + ' больше', on: {click: () => { c.abil[a] = Math.min(30, c.abil[a] + 1); save(); render(); }}}, '+'))));
   panel.append(box('Характеристики', ab, caster(c) ? h('p', {class: 'note'}, `Заклинательная характеристика: ${ABFULL[caster(c).ab]}.`) : null));
+  // max HP: typed by the player
   panel.append(box('Хиты',
-    h('div', {class: 'grid2'},
-      stepper('Максимум', String(c.hp.max), d => { c.hpAuto = false; c.hp.max = Math.max(1, c.hp.max + d); c.hp.cur = Math.min(c.hp.cur, c.hp.max); save(); render(); }),
-      h('div', {class: 'fld'}, h('span', {}, 'По среднему'), h('button', {class: 'btn', on: {click: () => { c.hpAuto = true; c.hp.max = avgHp(c); c.hp.cur = c.hp.max; save(); render(); }}}, c.hpAuto ? 'Считается сам' : `Вернуть ${avgHp(c)}`)))));
-  // limited-use features
-  const fl = h('div', {class: 'panel'});
-  for (const f of c.feats) fl.append(h('div', {class: 'item'},
-    h('div', {class: 'grid2'},
-      h('label', {class: 'fld'}, h('span', {}, 'Название'), h('input', {value: f.name, on: {change: e => { f.name = e.target.value; save(); }}})),
-      h('label', {class: 'fld'}, h('span', {}, 'Восстановление'), h('select', {on: {change: e => { f.rest = e.target.value; save(); }}},
-        h('option', {value: 'long', selected: f.rest !== 'short'}, 'Длинный отдых'), h('option', {value: 'short', selected: f.rest === 'short'}, 'Короткий отдых')))),
-    h('div', {class: 'row'},
-      stepper('Использований', String(f.max), d => { f.max = Math.max(1, f.max + d); f.left = Math.min(f.left + Math.max(d, 0), f.max); save(); render(); }),
-      h('button', {class: 'btn danger', on: {click: () => { c.feats = c.feats.filter(x => x !== f); save(); render(); }}}, 'Убрать'))));
-  panel.append(box('Умения с зарядами',
-    h('p', {class: 'note'}, 'Ярость, всплеск действий, ки, вдохновение и т. п. Заряды отмечаются во вкладке «Бой» и восстанавливаются отдыхом.'),
-    fl, h('button', {class: 'btn', on: {click: () => { c.feats.push({id: uid(), name: 'Новое умение', max: 1, left: 1, rest: 'long'}); save(); render(); }}}, 'Добавить умение')));
+    h('label', {class: 'fld'}, h('span', {}, 'Максимум хитов'),
+      h('input', {id: 'hpMax', type: 'number', inputmode: 'numeric', min: '1', value: String(c.hp.max),
+        on: {change: e => { const v = Math.max(1, parseInt(e.target.value, 10) || 1); c.hpAuto = false; const was = c.hp.max; c.hp.max = v;
+          c.hp.cur = Math.max(0, Math.min(v, c.hp.cur + v - was)); save(); render(); }}}))));
   panel.append(box('Файлы',
     h('p', {class: 'note'}, 'Сохраните персонажа в файл, чтобы перенести на другое устройство или не потерять при смене телефона. Импорт принимает и файл персонажа, и новый файл заклинаний.'),
     h('div', {class: 'row'},
