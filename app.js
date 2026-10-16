@@ -35,7 +35,7 @@ const CLASSES = {
 // martial subclasses that cast from the wizard list
 const CASTER_SUBS = {
   'воин|мистический рыцарь': {ab:'int', slots:THIRD, list:'волшебник', cantrips:l=>l<3?0:steps(l,2,[10]), known:THIRD_KNOWN},
-  'плут|мистический ловкач': {ab:'int', slots:THIRD, list:'волшебник', cantrips:l=>l<3?0:steps(l,3,[10]), known:THIRD_KNOWN},
+  'плут|мистический ловкач': {ab:'int', slots:THIRD, list:'волшебник', cantrips:l=>l<3?0:steps(l,2,[10]), known:THIRD_KNOWN},
 };
 const EXTRA_SUBS = {'воин':['мистический рыцарь'], 'плут':['мистический ловкач']};
 const COST = {1:2,2:3,3:5,4:6,5:7};
@@ -85,7 +85,7 @@ const idb = (() => {
 })();
 let SPELLS = [], CDATA = {classes: [], races: []};
 let BY = {};
-const indexSpells = () => { BY = Object.fromEntries(SPELLS.map(s => [s.id, s])); };
+const indexSpells = () => { BY = Object.fromEntries(SPELLS.map(s => [s.id, s])); BYEN = {}; for (const s of SPELLS) { BYEN[letters(s.id)] = s; BYEN[letters(s.e)] = s; } };
 
 const uid = () => Math.random().toString(36).slice(2, 9);
 const newChar = () => ({id: 'c' + Date.now().toString(36), name: 'Новый персонаж', race: '', cls: 'чародей', sub: '', lvl: 1,
@@ -127,7 +127,7 @@ function norm(c) {
   for (const k of Object.keys(d)) if (c[k] === undefined) c[k] = d[k];
   if (c.mod != null) { const k = caster(c); if (k) c.abil[k.ab] = 10 + 2 * c.mod; delete c.mod; }   // old file format
   if (!c.saves) c.saves = Object.fromEntries(AB.map(a => [a, base(c).saves.includes(a)]));
-  c.spells.forEach(x => { if (x.b === false) delete x.b; });
+  c.spells.forEach(x => { delete x.b; delete x.m; });
   if (!Array.isArray(c.cur)) c.cur = slotsFor(c).slice();
   while (c.cur.length < 9) c.cur.push(0);
   if (c.pact == null) c.pact = pactSlots(c.lvl);
@@ -222,26 +222,115 @@ function toast(t) { const el = document.getElementById('toast'); el.textContent 
 const ru = (a, b) => a.n.localeCompare(b.n, 'ru');
 // subclass spells that are always prepared/known: added automatically once their circle is available
 // (not for warlock patrons, the druid's Circle of the Land or Divine Soul — those are choices)
-const AUTO_OFF = ['колдун', 'друид|круг земли', 'чародей|божественная душа', 'монах|путь четырёх стихий'];
+// subclasses whose spell list is a menu to choose from, not a set of spells granted automatically
+const AUTO_OFF = ['колдун', 'друид|круг земли', 'чародей|божественная душа', 'монах|путь четырёх стихий',
+  'волшебник|магия хронургии', 'волшебник|магия гравитургии', 'варвар|путь великана', 'воин|мистический лучник'];
 function autoSub(c) {
   if (!subKey(c) || AUTO_OFF.includes(c.cls) || AUTO_OFF.includes(c.cls + '|' + c.sub.toLowerCase())) return [];
   const mc = Math.max(maxCircle(c), 0);
   return SPELLS.filter(s => fromSub(c, s) && s.l <= mc && !(c.hide || []).includes(s.id));
 }
-const picked = (c, id) => c.spells.find(x => x.id === id) || (autoSub(c).some(s => s.id === id) ? {id, auto: true} : null);
-const mySpells = c => { const ids = new Set(c.spells.map(x => x.id)); return [...c.spells.map(x => BY[x.id]), ...autoSub(c).filter(s => !ids.has(s.id))].filter(Boolean); };
+// ---- racial spells: read from the race traits ("[thaumaturgy]", "Начиная с 3-го уровня ...") ----
+let BYEN = {};
+const letters = t => String(t || '').toLowerCase().replace(/[^a-z]/g, '');
+function raceMagic(c) {
+  const key = c.race + '|' + c.raceVar + '|' + SPELLS.length;
+  if (raceMagic.k === key) return raceMagic.v;
+  const grants = [], list = new Set(), choices = [];
+  for (const t of raceTraits(c)) {
+    if (/иммунитет/i.test(t.x)) continue;
+    const mark = /^Заклинания метки/.test(t.n);
+    for (const sent of t.x.split(/(?<=[.!?])\s+/)) {
+      const lv = +((sent.match(/(\d+)-(?:го|м|й)\s+уровн/) || [])[1] || 1);
+      for (const m of sent.matchAll(/\[([^\]]+)\]/g)) {
+        const sp = BYEN[letters(m[1])];
+        if (!sp) continue;
+        if (mark) list.add(sp.id); else grants.push({id: sp.id, lvl: lv});
+      }
+    }
+    const ch = t.x.match(/знаете один заговор (?:на ваш выбор )?из списка заклинаний ([а-яё]+)/i);
+    if (ch) choices.push({n: 1, label: 'раса', ok: s => s.l === 0 && s.cl.includes(ch[1].replace(/а$/, ''))});
+  }
+  return (raceMagic.k = key, raceMagic.v = {grants, list, choices});
+}
+const autoRace = c => raceMagic(c).grants.filter(g => g.lvl <= c.lvl && !(c.hide || []).includes(g.id)).map(g => BY[g.id]).filter(Boolean);
+const autoAll = c => { const seen = new Set(); return [...autoSub(c), ...autoRace(c)].filter(s => !seen.has(s.id) && seen.add(s.id)); };
+const picked = (c, id) => c.spells.find(x => x.id === id) || (autoAll(c).some(s => s.id === id) ? {id, auto: true} : null);
+const mySpells = c => { const ids = new Set(c.spells.map(x => x.id)); return [...c.spells.map(x => BY[x.id]), ...autoAll(c).filter(s => !ids.has(s.id))].filter(Boolean); };
 const shortTime = t => /^1 действие/.test(t) ? 'действие' : /^1 бонусное/.test(t) ? 'бонус' : /^1 реакция/.test(t) ? 'реакция' : t;
 const cap = s => s ? s[0].toUpperCase() + s.slice(1) : s;
 const sign = n => (n >= 0 ? '+' : '') + n;
 const subKey = c => c.sub ? (c.sub.trim().toLowerCase() + ' (' + c.cls + ')') : '';
-const fromSub = (c, s) => !!subKey(c) && s.sc.toLowerCase().includes(subKey(c));
-// subclass spells don't count toward the limit (except a warlock patron's expanded list); the player can override per spell
+// exact match on the spell's subclass list ("сумрачный охотник" must not match "охотник")
+const subsOf = s => s._subs || (s._subs = s.sc.toLowerCase().split(/,\s*|;\s*/).map(x => x.trim()).filter(Boolean));
+const fromSub = (c, s) => !!subKey(c) && subsOf(s).includes(subKey(c));
+// subclasses whose granted spells may be swapped on level-up for another spell of the same circle
+// from the sorcerer, warlock or wizard list of the given schools (Tasha's Cauldron)
+const SWAP_RULES = {'чародей|аберрантный разум': ['прорицание', 'очарование'], 'чародей|заводная душа': ['ограждение', 'преобразование']};
+// which picked spells stand in for removed subclass spells: id -> name of the spell it replaces
+function swapMap(c) {
+  const rule = SWAP_RULES[c.cls + '|' + (c.sub || '').toLowerCase()], out = new Map();
+  if (!rule) return out;
+  const mc = Math.max(maxCircle(c), 0);
+  const removed = (c.hide || []).map(id => BY[id]).filter(s => s && fromSub(c, s) && s.l <= mc);
+  const cand = c.spells.map(x => ({x, s: BY[x.id]})).filter(({x, s}) => s && !fromSub(c, s)
+    && rule.some(r => s.s.startsWith(r)) && s.cl.some(k => ['чародей', 'колдун', 'волшебник'].includes(k)))
+    .sort((a, b) => (a.s.cl.includes(c.cls) ? 1 : 0) - (b.s.cl.includes(c.cls) ? 1 : 0));   // off-list spells first
+  for (const r of removed) {
+    const i = cand.findIndex(({s}) => s.l === r.l);
+    if (i >= 0) { out.set(cand[i].s.id, r.n); cand.splice(i, 1); }
+  }
+  return out;
+}
+// subclass spells that still count toward the limit: warlock patron lists (not cantrips) and dunamancy, which only widen the list
+const COUNTED_SUB = c => c.cls === 'колдун' || ['волшебник|магия хронургии', 'волшебник|магия гравитургии'].includes(c.cls + '|' + (c.sub || '').toLowerCase());
+const hasOpt = (c, name) => c.opts.some(o => o.toLowerCase().endsWith('|' + name.toLowerCase()));
+// spells that may be taken for free on top of the limit, by the rules of race, subclass and class options
+function freeSlots(c) {
+  const sub = (c.sub || '').toLowerCase(), L = c.lvl, out = [...raceMagic(c).choices];
+  const k = caster(c), onList = s => k && s.cl.includes(k.list);
+  if (c.cls === 'чародей' && sub === 'божественная душа') out.push({n: 1, label: 'родство', ok: s => fromSub(c, s)});
+  if ((c.cls === 'варвар' && sub === 'путь великана') || (c.cls === 'воин' && sub === 'мистический лучник')) out.push({n: 1, label: 'подкласс', ok: s => fromSub(c, s)});
+  if (c.cls === 'жрец' && sub === 'домен природы') out.push({n: 1, label: 'домен', ok: s => s.l === 0 && s.cl.includes('друид')});
+  if (c.cls === 'жрец' && sub === 'домен магии') out.push({n: 2, label: 'домен', ok: s => s.l === 0 && s.cl.includes('волшебник')});
+  if (c.cls === 'друид' && sub === 'круг земли' && L >= 2) out.push({n: 1, label: 'круг', ok: s => s.l === 0 && s.cl.includes('друид')});
+  if (c.cls === 'бард' && sub === 'коллегия знаний' && L >= 6) out.push({n: 2, label: 'тайны', ok: s => !onList(s)});
+  if (c.cls === 'колдун' && L >= 3 && hasOpt(c, 'Договор гримуара')) out.push({n: 3, label: 'гримуар', ok: s => s.l === 0 && !onList(s)});
+  if (c.cls === 'колдун' && hasOpt(c, 'КНИГА ДРЕВНИХ СЕКРЕТОВ')) out.push({n: 99, label: 'ритуал', ok: s => s.r && !onList(s)});
+  return out;
+}
+// assign picked spells to free slots and swaps: id -> label
+function freeMap(c) {
+  const out = new Map();
+  for (const [id, n] of swapMap(c)) out.set(id, 'вместо ' + n);
+  const k = caster(c);
+  const cand = c.spells.map(x => BY[x.id]).filter(s => s && !out.has(s.id) && !(fromSub(c, s) && !COUNTED_SUB(c) && !limitedSub(c)))
+    .sort((a, b) => (k && a.cl.includes(k.list) ? 1 : 0) - (k && b.cl.includes(k.list) ? 1 : 0));   // off-list spells first
+  for (const slot of freeSlots(c)) {
+    let n = slot.n;
+    for (const s of cand) if (n > 0 && !out.has(s.id) && slot.ok(s)) { out.set(s.id, slot.label); n--; }
+  }
+  return out;
+}
+// subclasses whose list is a menu with only some picks free (handled by freeSlots)
+const limitedSub = c => ['чародей|божественная душа', 'варвар|путь великана', 'воин|мистический лучник'].includes(c.cls + '|' + (c.sub || '').toLowerCase());
 const outOfLimit = (c, x) => {
   if (x.auto) return true;
-  if (x.m === 'out' || x.b === true) return true;
-  if (x.m === 'in') return false;
-  return !!BY[x.id] && fromSub(c, BY[x.id]) && c.cls !== 'колдун';
+  const s = BY[x.id];
+  if (!s) return false;
+  if (freeMap(c).has(x.id)) return true;
+  if (fromSub(c, s)) return limitedSub(c) ? false : COUNTED_SUB(c) ? (c.cls === 'колдун' && s.l === 0) : true;
+  return false;
 };
+// spells the book offers as "class list": own list, subclass, dragonmark spells and lists opened by free slots
+function onBookList(c, s) {
+  const k = caster(c);
+  if (fromSub(c, s)) return true;
+  if (k && s.cl.includes(k.list)) return true;
+  if (k && raceMagic(c).list.has(s.id)) return true;
+  if (c.cls === 'чародей' && (c.sub || '').toLowerCase() === 'божественная душа' && s.cl.includes('жрец')) return true;
+  return freeSlots(c).some(sl => sl.n < 99 && sl.ok(s));
+}
 function subclassesOf(cls) {
   const d = CDATA.classes.find(x => x.cls === cls);
   if (d && d.subclasses.length) return d.subclasses.map(x => x.n.toLowerCase());
@@ -463,7 +552,7 @@ function renderFight(c, panel) {
   }
   const mine = mySpells(c);
   if (!mine.length) { if (k) panel.append(h('p', {class: 'empty'}, 'Заклинания не выбраны. Откройте «Книгу» и отметьте, что знает персонаж.')); return; }
-  if (!k) panel.append(h('div', {class: 'lvlh'}, 'Заклинания подкласса'));
+  if (!k) panel.append(h('div', {class: 'lvlh'}, 'Заклинания от расы и подкласса'));
   for (let lv = 0; lv <= 9; lv++) {
     const g = mine.filter(s => s.l === lv).sort(ru);
     if (!g.length) continue;
@@ -507,6 +596,8 @@ function spellCard(c, s, mode) {
   if (s.k) tags.push(h('span', {class: 'tag k'}, 'К'));
   if (s.r) tags.push(h('span', {class: 'tag'}, 'Р'));
   if (fromSub(c, s)) tags.push(h('span', {class: 'tag k'}, 'подкласс'));
+  const fr = freeMap(c).get(s.id) || (raceMagic(c).grants.some(g => g.id === s.id) && mine && mine.auto ? 'раса' : '');
+  if (fr) tags.push(h('span', {class: 'tag k'}, fr));
   const head = h('div', {class: 'sh'});
   if (mode === 'book') head.append(h('button', {class: 'pick' + (mine ? ' on' : '') + (mine && outOfLimit(c, mine) ? ' b' : ''), 'aria-pressed': mine ? 'true' : 'false',
     'aria-label': mine ? 'Убрать из выбранных' : 'Выбрать', on: {click: () => togglePick(c, s)}}, mine ? '✓' : '+'));
@@ -524,9 +615,6 @@ function spellCard(c, s, mode) {
       h('div', {class: 'wide'}, h('span', {}, 'Классы'), s.cl.join(', ') + (s.sc ? '; ' + s.sc : ''))),
     h('p', {class: 'text', text: s.x}));
   if (s.h) body.append(h('p', {class: 'higher', text: s.h}));
-  if (mode === 'book' && mine && !mine.auto) body.append(h('label', {class: 'row sub'},
-    h('input', {type: 'checkbox', checked: outOfLimit(c, mine), on: {change: e => { mine.m = e.target.checked ? 'out' : 'in'; delete mine.b; save(); render(); }}}),
-    'Не считается в лимит (подкласс, домен, психоника и т. п.)'));
   if (mode === 'fight') body.append(castRow(c, s));
   card.append(body);
   return card;
@@ -562,8 +650,8 @@ function cast(c, s, lv) {
 function togglePick(c, s) {
   c.hide = c.hide || [];
   const i = c.spells.findIndex(x => x.id === s.id), h = c.hide.indexOf(s.id);
-  const auto = autoSub(c).some(x => x.id === s.id);
-  if (i >= 0) { c.spells.splice(i, 1); if (fromSub(c, s)) c.hide.push(s.id); }
+  const auto = autoAll(c).some(x => x.id === s.id);
+  if (i >= 0) { c.spells.splice(i, 1); if (fromSub(c, s) || raceMagic(c).grants.some(g => g.id === s.id)) c.hide.push(s.id); }
   else if (auto) c.hide.push(s.id);
   else if (h >= 0) c.hide.splice(h, 1);
   else c.spells.push({id: s.id});
@@ -620,7 +708,7 @@ function renderBook(c, panel) {
     list.replaceChildren();
     const qq = ui.q.trim().toLowerCase();
     let arr = SPELLS;
-    if (ui.scope === 'class') arr = arr.filter(s => k ? (s.cl.includes(k.list) || fromSub(c, s)) && s.l <= mc : fromSub(c, s));
+    if (ui.scope === 'class') arr = arr.filter(s => onBookList(c, s) && (s.l <= mc || !k));
     else if (ui.scope === 'mine') arr = arr.filter(s => picked(c, s.id));
     if (ui.circle !== 'all') arr = arr.filter(s => s.l === +ui.circle);
     if (qq) arr = arr.filter(s => (s.n + ' ' + s.e + ' ' + s.s).toLowerCase().includes(qq));
